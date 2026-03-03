@@ -11,18 +11,37 @@ from ..theme import current_theme
 
 
 # Repair type display colors (used for cell background tinting)
+# Includes old names (baseline, followup) as aliases for backwards compat
 REPAIR_COLORS = {
+    'initial': '#2a4a2a',
     'baseline': '#2a4a2a',
     'pre_repair': '#4a3a1a',
     'post_repair': '#1a2a4a',
+    'check': '#3a3a3a',
     'followup': '#3a3a3a',
+    'internal': '#3a2a4a',
 }
 
 REPAIR_COLORS_LIGHT = {
+    'initial': '#d4edda',
     'baseline': '#d4edda',
     'pre_repair': '#fff3cd',
     'post_repair': '#cce5ff',
+    'check': '#e2e3e5',
     'followup': '#e2e3e5',
+    'internal': '#e8daef',
+}
+
+# Map old names to new display names
+REPAIR_DISPLAY_NAMES = {
+    'initial': 'Initial',
+    'baseline': 'Initial',
+    'pre_repair': 'Pre Repair',
+    'post_repair': 'Post Repair',
+    'check': 'Check',
+    'followup': 'Check',
+    'internal': 'Internal',
+    'unknown': 'Unknown',
 }
 
 COLUMNS = ['Date', 'Type', 'Repair #', 'Duration', 'Frames', 'Min °C', 'Max °C', 'Avg °C', 'Notes']
@@ -78,7 +97,7 @@ class RecordingTableWidget(QWidget):
             self._set_cell(row, 0, date_str, rec.repair_type)
 
             # Type
-            display_type = rec.repair_type.replace('_', ' ').title() if rec.repair_type else '-'
+            display_type = REPAIR_DISPLAY_NAMES.get(rec.repair_type, rec.repair_type.replace('_', ' ').title() if rec.repair_type else '-')
             self._set_cell(row, 1, display_type, rec.repair_type)
 
             # Repair #

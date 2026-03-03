@@ -10,12 +10,15 @@ from ..models import RecordingData, RepairEvent
 from ..theme import current_theme
 
 
-# Colors for recording types
+# Colors for recording types (old names kept as aliases)
 TYPE_COLORS = {
+    'initial': '#47d4a0',
     'baseline': '#47d4a0',
     'pre_repair': '#ff6b4a',
     'post_repair': '#4e8fff',
+    'check': '#888888',
     'followup': '#888888',
+    'internal': '#b07cd8',
 }
 
 
@@ -99,7 +102,8 @@ class TimelineCanvas(QWidget):
             font.setBold(True)
             painter.setFont(font)
 
-            type_display = rec.repair_type.replace('_', ' ').title() if rec.repair_type else 'Unknown'
+            from .recording_table import REPAIR_DISPLAY_NAMES
+            type_display = REPAIR_DISPLAY_NAMES.get(rec.repair_type, rec.repair_type.replace('_', ' ').title() if rec.repair_type else 'Unknown')
             if rec.repair_number is not None:
                 type_display += f"  #{rec.repair_number}"
             painter.drawText(info_x, y + 4, type_display)
@@ -161,13 +165,15 @@ class RepairTimelineWidget(QWidget):
 
         # Legend
         self.legend = QLabel(
-            '<span style="color: #47d4a0;">● Baseline</span>'
+            '<span style="color: #47d4a0;">● Initial</span>'
             '&nbsp;&nbsp;&nbsp;'
             '<span style="color: #ff6b4a;">● Pre-Repair</span>'
             '&nbsp;&nbsp;&nbsp;'
             '<span style="color: #4e8fff;">● Post-Repair</span>'
             '&nbsp;&nbsp;&nbsp;'
-            '<span style="color: #888888;">● Follow-up</span>'
+            '<span style="color: #888888;">● Check</span>'
+            '&nbsp;&nbsp;&nbsp;'
+            '<span style="color: #b07cd8;">● Internal</span>'
         )
         self.legend.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.legend.setStyleSheet("padding: 8px;")

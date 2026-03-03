@@ -80,7 +80,7 @@ class PanelListWidget(QWidget):
 
             # Show repair status
             has_pre_repair = any(r.repair_type == "pre_repair" for r in panel.recordings)
-            has_baseline = any(r.repair_type == "baseline" for r in panel.recordings)
+            has_baseline = any(r.repair_type in ("baseline", "initial") for r in panel.recordings)
             if has_pre_repair:
                 subtitle += "  |  needs repair"
             elif has_baseline:

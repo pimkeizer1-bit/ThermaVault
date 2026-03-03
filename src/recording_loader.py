@@ -178,10 +178,12 @@ class RecordingLoader:
         return self._colormap.apply(corrected)
 
     def get_full_frame_rgb(self, index: int,
-                           highlight_panel_id: str = None) -> Optional[np.ndarray]:
+                           highlight_panel_id: str = None,
+                           show_all_rois: bool = False) -> Optional[np.ndarray]:
         """Get full frame as RGB with colormap applied.
 
         If highlight_panel_id is given, draws the ROI outline for that panel.
+        If show_all_rois is True, draws all ROI outlines.
         """
         raw = self.get_raw_frame(index)
         if raw is None or self._colormap is None:
@@ -189,8 +191,11 @@ class RecordingLoader:
 
         rgb = self._colormap.apply(raw)
 
-        if highlight_panel_id and self.metadata:
-            rgb = self._draw_roi_overlay(rgb, highlight_panel_id)
+        if self.metadata:
+            if show_all_rois:
+                rgb = self._draw_all_roi_overlays(rgb, highlight_panel_id)
+            elif highlight_panel_id:
+                rgb = self._draw_roi_overlay(rgb, highlight_panel_id)
 
         return rgb
 
@@ -230,6 +235,73 @@ class RecordingLoader:
                       (tx + text_size[0] + 2, ty + 2),
                       (0, 0, 0), -1)
         cv2.putText(result, label, (tx, ty), font, font_scale, color, thickness)
+
+        return result
+
+    def _draw_all_roi_overlays(self, rgb: np.ndarray,
+                               highlight_panel_id: str = None) -> np.ndarray:
+        """Draw ROI overlays for all POIs. The highlighted panel gets a thicker outline."""
+        result = rgb.copy()
+        h, w = result.shape[:2]
+
+        # Draw non-current panels first (behind), then current panel on top
+        sorted_pois = sorted(self.metadata.pois,
+                             key=lambda p: p.panel_id == highlight_panel_id)
+
+        for poi in sorted_pois:
+            if not poi.roi.is_valid:
+                continue
+
+            pts = np.array(poi.roi_corners, dtype=np.int32)
+            color = poi.color
+            is_current = (poi.panel_id == highlight_panel_id)
+
+            if is_current:
+                # Current panel: thick outline, full label above top-left
+                cv2.polylines(result, [pts], isClosed=True, color=color, thickness=2)
+                for corner in poi.roi_corners:
+                    cv2.circle(result, (int(corner[0]), int(corner[1])), 3, color, -1)
+
+                label = poi.name
+                font_scale = 0.4
+                text_thickness = 1
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                text_size = cv2.getTextSize(label, font, font_scale, text_thickness)[0]
+
+                tx = int(pts[0][0])
+                ty = int(pts[0][1]) - 8
+                if ty < text_size[1] + 4:
+                    ty = int(pts[0][1]) + text_size[1] + 8
+
+                cv2.rectangle(result,
+                              (tx - 2, ty - text_size[1] - 2),
+                              (tx + text_size[0] + 2, ty + 2),
+                              (0, 0, 0), -1)
+                cv2.putText(result, label, (tx, ty), font, font_scale, color, text_thickness)
+            else:
+                # Other panels: thin dashed-like outline, small label at bottom-right
+                cv2.polylines(result, [pts], isClosed=True, color=color, thickness=1)
+
+                label = poi.name
+                font_scale = 0.3
+                text_thickness = 1
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                text_size = cv2.getTextSize(label, font, font_scale, text_thickness)[0]
+
+                # Position at bottom-right corner of the ROI bounding box
+                br_x = int(max(p[0] for p in poi.roi_corners))
+                br_y = int(max(p[1] for p in poi.roi_corners))
+                tx = br_x - text_size[0]
+                ty = br_y + text_size[1] + 6
+                # Clamp within frame
+                tx = max(2, min(tx, w - text_size[0] - 2))
+                ty = min(ty, h - 4)
+
+                cv2.rectangle(result,
+                              (tx - 2, ty - text_size[1] - 2),
+                              (tx + text_size[0] + 2, ty + 2),
+                              (0, 0, 0), -1)
+                cv2.putText(result, label, (tx, ty), font, font_scale, color, text_thickness)
 
         return result
 

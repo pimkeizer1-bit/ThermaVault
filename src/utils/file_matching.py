@@ -3,7 +3,8 @@
 from typing import Optional, Tuple
 
 # Repair type keywords that appear in report filenames
-REPAIR_KEYWORDS = ['_pre_repair_', '_post_repair_', '_followup_', '_baseline_']
+REPAIR_KEYWORDS = ['_pre_repair_', '_post_repair_', '_followup_', '_baseline_',
+                    '_initial_', '_check_', '_internal_']
 
 
 def parse_report_filename(filename: str) -> Optional[Tuple[str, str, str]]:

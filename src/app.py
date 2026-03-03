@@ -9,6 +9,8 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 
 from .data_loader import DataLoader
+from .data_writer import DataWriter
+from .annotations import AnnotationManager
 from .settings import AppSettings
 from .theme import ThemeManager, current_theme
 from .widgets.panel_list import PanelListWidget
@@ -124,6 +126,10 @@ class MainWindow(QMainWindow):
         refresh_action.setShortcut("F5")
         refresh_action.triggered.connect(self._refresh)
         file_menu.addAction(refresh_action)
+
+        import_action = QAction("&Import recordings from folder...", self)
+        import_action.triggered.connect(self._import_from_folder)
+        file_menu.addAction(import_action)
 
         file_menu.addSeparator()
 
@@ -430,6 +436,17 @@ class MainWindow(QMainWindow):
         qr_dir = str(Path(root_path) / "QR codes")
         self.panel_detail.set_qr_dir(qr_dir)
 
+        # Set up annotation manager for field notes
+        self._annotation_manager = AnnotationManager(root_path)
+        self.panel_detail.set_annotation_manager(self._annotation_manager)
+
+        # Set up data writer for data manager
+        self._data_writer = DataWriter(root_path)
+        self.panel_detail.set_data_writer(self._data_writer)
+        self.panel_detail.data_manager_tab.data_changed.connect(
+            self._refresh_preserving_selection
+        )
+
         # Populate panel list
         panels = self.data_loader.get_all_panels()
         self.panel_list.set_panels(panels)
@@ -463,6 +480,72 @@ class MainWindow(QMainWindow):
         """Reload data from the current folder."""
         if self.settings.last_data_folder:
             self._load_data(self.settings.last_data_folder)
+
+    def _refresh_preserving_selection(self):
+        """Reload data but re-select the current panel and tab."""
+        if not self.settings.last_data_folder:
+            return
+
+        # Remember current panel and tab
+        current_item = self.panel_list.list_widget.currentItem()
+        current_panel_id = None
+        if current_item:
+            current_panel_id = current_item.data(Qt.ItemDataRole.UserRole)
+        current_tab = self.panel_detail.tabs.currentIndex()
+
+        self._load_data(self.settings.last_data_folder)
+
+        # Re-select panel
+        if current_panel_id:
+            for i in range(self.panel_list.list_widget.count()):
+                item = self.panel_list.list_widget.item(i)
+                if item and item.data(Qt.ItemDataRole.UserRole) == current_panel_id:
+                    self.panel_list.list_widget.setCurrentItem(item)
+                    break
+
+        # Restore tab
+        if current_tab >= 0:
+            self.panel_detail.tabs.setCurrentIndex(current_tab)
+
+    def _import_from_folder(self):
+        """Import new recordings from another ThermalPanel data folder."""
+        if not self.settings.last_data_folder:
+            QMessageBox.warning(self, "No Data Loaded",
+                                "Please open a data folder first before importing.")
+            return
+
+        if not hasattr(self, '_data_writer') or not self._data_writer:
+            QMessageBox.warning(self, "No Data Loaded",
+                                "Please open a data folder first before importing.")
+            return
+
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select source folder to import from",
+            "", QFileDialog.Option.ShowDirsOnly
+        )
+        if not folder:
+            return
+
+        # Confirm
+        reply = QMessageBox.question(
+            self, "Import Recordings",
+            f"Import new recordings from:\n{folder}\n\n"
+            f"Into current database:\n{self.settings.last_data_folder}\n\n"
+            "This will copy new recording folders and add them to your database. "
+            "Your existing cleanup (repair types, hidden recordings) will be preserved.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        ok, msg = self._data_writer.import_from_folder(folder, copy_files=True)
+
+        if ok:
+            QMessageBox.information(self, "Import Complete", msg)
+            self._refresh_preserving_selection()
+        else:
+            QMessageBox.warning(self, "Import Failed", msg)
 
     def _toggle_theme(self):
         ThemeManager.instance().toggle()
@@ -517,9 +600,8 @@ class MainWindow(QMainWindow):
             self, "About ThermaVault",
             "<h2>ThermaVault</h2>"
             "<p>Thermal Panel Data Viewer</p>"
-            "<p>A standalone tool for browsing ThermalPanel data, "
+            "<p>A standalone tool for browsing and managing ThermalPanel data, "
             "recordings, reports, and repair history.</p>"
-            "<p>Read-only - no changes are made to your data.</p>"
         )
 
     def _restore_state(self):

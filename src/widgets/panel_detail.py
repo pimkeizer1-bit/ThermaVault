@@ -15,6 +15,8 @@ from .recording_viewer import RecordingViewerWidget
 from .report_list import ReportListWidget
 from .repair_timeline import RepairTimelineWidget
 from .qr_display import QRDisplayWidget
+from .field_notes import FieldNotesWidget
+from .data_manager import DataManagerWidget
 
 
 class PanelDetailWidget(QWidget):
@@ -23,6 +25,7 @@ class PanelDetailWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._qr_dir: str | None = None
+        self._annotation_manager = None
         self._init_ui()
 
     def set_qr_dir(self, qr_dir: str):
@@ -32,6 +35,15 @@ class PanelDetailWidget(QWidget):
     def set_settings(self, settings):
         """Pass settings reference to child widgets that need it."""
         self.playback_tab.set_settings(settings)
+
+    def set_annotation_manager(self, manager):
+        """Pass annotation manager to the field notes tab."""
+        self._annotation_manager = manager
+        self.field_notes_tab.set_annotation_manager(manager)
+
+    def set_data_writer(self, writer):
+        """Pass data writer to the data manager tab."""
+        self.data_manager_tab.set_data_writer(writer)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -72,9 +84,17 @@ class PanelDetailWidget(QWidget):
         self.reports_tab = ReportListWidget()
         self.tabs.addTab(self.reports_tab, "Reports")
 
+        # Field Notes tab
+        self.field_notes_tab = FieldNotesWidget()
+        self.tabs.addTab(self.field_notes_tab, "Field Notes")
+
         # Repair History tab
         self.repair_tab = RepairTimelineWidget()
         self.tabs.addTab(self.repair_tab, "Repair History")
+
+        # Data Manager tab
+        self.data_manager_tab = DataManagerWidget()
+        self.tabs.addTab(self.data_manager_tab, "Data Manager")
 
         # QR Code tab
         self.qr_tab = QRDisplayWidget()
@@ -174,8 +194,14 @@ class PanelDetailWidget(QWidget):
         # Reports tab
         self.reports_tab.set_reports(reports)
 
+        # Field Notes tab
+        self.field_notes_tab.set_panel_recordings(panel.panel_id, panel.recordings)
+
         # Repair History tab
         self.repair_tab.set_data(panel.recordings, repair_events)
+
+        # Data Manager tab
+        self.data_manager_tab.set_panel(panel, reports)
 
         # QR Code tab - pass panel data for auto-generation
         self.qr_tab.set_qr_data(panel, qr_path, self._qr_dir)
@@ -184,6 +210,19 @@ class PanelDetailWidget(QWidget):
         self.tabs.setTabText(1, f"Recordings ({len(panel.recordings)})")
         pdf_count = len([r for r in reports if r.is_pdf])
         self.tabs.setTabText(3, f"Reports ({pdf_count})")
+
+        # Field Notes badge
+        if self._annotation_manager:
+            rec_ids = [r.recording_id for r in panel.recordings]
+            summary = self._annotation_manager.get_panel_annotation_summary(
+                panel.panel_id, rec_ids
+            )
+            total = sum(c + p for c, p in summary.values())
+            fn_idx = self.tabs.indexOf(self.field_notes_tab)
+            if total > 0:
+                self.tabs.setTabText(fn_idx, f"Field Notes ({total})")
+            else:
+                self.tabs.setTabText(fn_idx, "Field Notes")
 
     def set_temp_range(self, temp_min: float, temp_max: float):
         """Forward the global temperature range to the playback tab."""
@@ -195,6 +234,8 @@ class PanelDetailWidget(QWidget):
         self.id_label.setText("")
         self.tabs.hide()
         self.playback_tab.clear()
+        self.field_notes_tab.clear()
+        self.data_manager_tab.clear()
 
     def apply_theme(self):
         t = current_theme()
@@ -203,5 +244,7 @@ class PanelDetailWidget(QWidget):
         self.recordings_tab.apply_theme()
         self.playback_tab.apply_theme()
         self.reports_tab.apply_theme()
+        self.field_notes_tab.apply_theme()
         self.repair_tab.apply_theme()
+        self.data_manager_tab.apply_theme()
         self.qr_tab.apply_theme()

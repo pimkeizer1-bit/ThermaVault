@@ -37,6 +37,7 @@ class PanelData:
     recordings: List[RecordingData] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
     next_repair_number: int = 1
+    hidden_recordings: List[str] = field(default_factory=list)
 
 
 @dataclass

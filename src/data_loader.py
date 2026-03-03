@@ -68,9 +68,28 @@ class DataLoader:
 
         for panel_id, panel_data in data.get('panels', {}).items():
             recordings = []
-            for rec_data in panel_data.get('recordings', []):
+            for rec_data in panel_data.get('recordings') or []:
+                # Guard against null values from JSON
+                for key in ('tags',):
+                    if rec_data.get(key) is None:
+                        rec_data[key] = []
+                for key in ('notes', 'repair_type', 'recording_id',
+                            'recording_path', 'timestamp'):
+                    if rec_data.get(key) is None:
+                        rec_data[key] = ''
+                for key in ('duration', 'temp_min', 'temp_max', 'temp_avg'):
+                    if rec_data.get(key) is None:
+                        rec_data[key] = 0.0
+                for key in ('frame_count',):
+                    if rec_data.get(key) is None:
+                        rec_data[key] = 0
                 recordings.append(RecordingData(**rec_data))
             panel_data['recordings'] = recordings
+            # Ensure list fields aren't None
+            if panel_data.get('tags') is None:
+                panel_data['tags'] = []
+            if panel_data.get('hidden_recordings') is None:
+                panel_data['hidden_recordings'] = []
             panel = PanelData(**panel_data)
             self.panels[panel_id] = panel
             self._name_to_id[panel.name.lower()] = panel_id
@@ -87,9 +106,13 @@ class DataLoader:
 
         # Build a set of (panel_id, recording_id) pairs already known
         known_links = set()
-        for panel in self.panels.values():
+        # Also collect hidden recording IDs (removed from DB but files kept on disk)
+        hidden_recordings: dict[str, set[str]] = {}
+        for panel_id, panel in self.panels.items():
             for rec in panel.recordings:
-                known_links.add((panel.panel_id, rec.recording_id))
+                known_links.add((panel_id, rec.recording_id))
+            if panel.hidden_recordings:
+                hidden_recordings[panel_id] = set(panel.hidden_recordings)
 
         # Scan all recording folders
         for rec_folder in sorted(self.recordings_dir.iterdir()):
@@ -107,7 +130,7 @@ class DataLoader:
                 continue
 
             recording_id = rec_folder.name
-            pois = meta.get('pois', [])
+            pois = meta.get('pois') or []
 
             for poi in pois:
                 panel_id = poi.get('panel_id')
@@ -115,6 +138,10 @@ class DataLoader:
                     continue
 
                 if (panel_id, recording_id) in known_links:
+                    continue
+
+                # Skip recordings that were explicitly hidden (removed from DB)
+                if recording_id in hidden_recordings.get(panel_id, set()):
                     continue
 
                 # This recording contains the panel but isn't linked - add it
@@ -177,7 +204,8 @@ class DataLoader:
             raw_panel_id = None
             repair_type = None
             timestamp_str = None
-            for keyword in ['_pre_repair_', '_post_repair_', '_followup_', '_baseline_']:
+            for keyword in ['_pre_repair_', '_post_repair_', '_followup_', '_baseline_',
+                               '_initial_', '_check_', '_internal_']:
                 idx = base_key.rfind(keyword)
                 if idx >= 0:
                     raw_panel_id = base_key[:idx]
@@ -313,7 +341,7 @@ class DataLoader:
 
         baseline = None
         for rec in recordings:
-            if rec.repair_type == "baseline":
+            if rec.repair_type in ("baseline", "initial"):
                 baseline = rec
                 break
         if baseline is None:

@@ -604,6 +604,13 @@ class RecordingViewerWidget(QWidget):
         self.show_original_cb.toggled.connect(self._on_show_original_changed)
         info_bar.addWidget(self.show_original_cb)
 
+        # Show all ROIs checkbox
+        self.show_all_rois_cb = QCheckBox("All ROIs")
+        self.show_all_rois_cb.setToolTip("Show all panel ROIs on the original frame (not just the selected panel)")
+        self.show_all_rois_cb.setEnabled(False)
+        self.show_all_rois_cb.toggled.connect(self._on_show_all_rois_changed)
+        info_bar.addWidget(self.show_all_rois_cb)
+
         # Colormap selector
         info_bar.addWidget(QLabel("Colormap:"))
         self.colormap_combo = QComboBox()
@@ -914,7 +921,11 @@ class RecordingViewerWidget(QWidget):
         self.frame_display.set_frame(rgb)
 
         if self.show_original_cb.isChecked():
-            full_rgb = self._loader.get_full_frame_rgb(index, highlight_panel_id=self._panel_id)
+            full_rgb = self._loader.get_full_frame_rgb(
+                index,
+                highlight_panel_id=self._panel_id,
+                show_all_rois=self.show_all_rois_cb.isChecked(),
+            )
             if full_rgb is not None:
                 full_rgb = np.ascontiguousarray(full_rgb)
                 self.original_display.set_frame(full_rgb)
@@ -1018,10 +1029,15 @@ class RecordingViewerWidget(QWidget):
         self.original_display.setVisible(checked)
         self.original_frame_label.setVisible(checked)
         self.corrected_frame_label.setVisible(checked)
+        self.show_all_rois_cb.setEnabled(checked)
         if checked:
             self._show_frame(self._current_frame)
         else:
             self.original_display.clear_frame()
+
+    def _on_show_all_rois_changed(self, checked: bool):
+        if self.show_original_cb.isChecked():
+            self._show_frame(self._current_frame)
 
     def _on_slider_changed(self, value: int):
         self._current_frame = value
