@@ -324,6 +324,28 @@ class DataWriter:
 
         return True, str(output_path)
 
+    def rename_panel(self, panel_id: str, new_name: str) -> tuple[bool, str]:
+        """Rename a panel's display name in panels.json.
+
+        Only changes the 'name' field. The panel_id (internal key) and all
+        recording links remain unchanged.
+        """
+        try:
+            data = self._read_current()
+        except Exception as e:
+            return False, f"Could not read panels.json: {e}"
+
+        panel = data.get('panels', {}).get(panel_id)
+        if panel is None:
+            return False, f"Panel '{panel_id}' not found"
+
+        old_name = panel.get('name', panel_id)
+        self._backup()
+        panel['name'] = new_name
+        self._write_atomic(data)
+
+        return True, f"Renamed '{old_name}' → '{new_name}'"
+
     def import_from_folder(self, source_path: str,
                            copy_files: bool = True) -> tuple[bool, str]:
         """Import new recordings from another ThermalPanel data folder.

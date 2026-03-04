@@ -5,7 +5,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QDialog, QComboBox,
-    QFormLayout, QFrame, QCheckBox, QListWidget, QListWidgetItem
+    QFormLayout, QFrame, QCheckBox, QListWidget, QListWidgetItem, QLineEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -165,6 +165,11 @@ class DataManagerWidget(QWidget):
         self.restore_btn.setToolTip("Restore recordings that were removed from the database")
         self.restore_btn.clicked.connect(self._on_restore_hidden)
         actions_layout.addWidget(self.restore_btn)
+
+        self.rename_btn = QPushButton("Rename Panel")
+        self.rename_btn.setToolTip("Rename this panel in the database")
+        self.rename_btn.clicked.connect(self._on_rename_panel)
+        actions_layout.addWidget(self.rename_btn)
 
         actions_layout.addStretch()
 
@@ -510,6 +515,44 @@ class DataManagerWidget(QWidget):
         )
         self.status_label.setText(msg)
         self.data_changed.emit()
+
+    def _on_rename_panel(self):
+        if not self._writer or not self._panel:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Rename Panel")
+        dlg.setMinimumWidth(360)
+        layout = QVBoxLayout(dlg)
+
+        layout.addWidget(QLabel(f"Current name:  <b>{self._panel.name}</b>"))
+        layout.addWidget(QLabel("New name:"))
+        name_edit = QLineEdit(self._panel.name)
+        name_edit.selectAll()
+        layout.addWidget(name_edit)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dlg.reject)
+        buttons.addWidget(cancel_btn)
+        ok_btn = QPushButton("Rename")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dlg.accept)
+        buttons.addWidget(ok_btn)
+        layout.addLayout(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_name = name_edit.text().strip()
+        if not new_name or new_name == self._panel.name:
+            return
+
+        ok, msg = self._writer.rename_panel(self._panel.panel_id, new_name)
+        self.status_label.setText(msg)
+        if ok:
+            self.data_changed.emit()
 
     # -- Cleanup --
 

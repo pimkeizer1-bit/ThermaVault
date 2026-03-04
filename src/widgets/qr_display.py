@@ -251,7 +251,8 @@ class QRDisplayWidget(QWidget):
         if img_h >= img_w:
             # Portrait: 2 QR codes stacked vertically
             cell_h = img_h // 2
-            qr_size = min(img_w - 2 * margin, cell_h - text_h - 2 * margin)
+            qr_max = min(img_w - 2 * margin, cell_h - text_h - 2 * margin)
+            qr_size = int(qr_max * 0.55)
             qr_resized = qr_pil.resize((qr_size, qr_size), Image.NEAREST)
 
             for row in range(2):
@@ -267,7 +268,8 @@ class QRDisplayWidget(QWidget):
         else:
             # Landscape: 2 QR codes side by side
             cell_w = img_w // 2
-            qr_size = min(cell_w - 2 * margin, img_h - text_h - 2 * margin)
+            qr_max = min(cell_w - 2 * margin, img_h - text_h - 2 * margin)
+            qr_size = int(qr_max * 0.55)
             qr_resized = qr_pil.resize((qr_size, qr_size), Image.NEAREST)
 
             for col in range(2):
