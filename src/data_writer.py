@@ -324,6 +324,60 @@ class DataWriter:
 
         return True, str(output_path)
 
+    def merge_panels(self, source_panel_id: str,
+                     target_panel_id: str) -> tuple[bool, str]:
+        """Merge all recordings from source panel into target panel, then delete source.
+
+        Moves recordings (and hidden_recordings list) from source to target,
+        deduplicating by recording_id. The source panel entry is removed from
+        panels.json. Recording files on disk are not moved.
+        """
+        try:
+            data = self._read_current()
+        except Exception as e:
+            return False, f"Could not read panels.json: {e}"
+
+        panels = data.get('panels', {})
+        source = panels.get(source_panel_id)
+        target = panels.get(target_panel_id)
+
+        if source is None:
+            return False, f"Source panel '{source_panel_id}' not found"
+        if target is None:
+            return False, f"Target panel '{target_panel_id}' not found"
+
+        self._backup()
+
+        # Build set of recording IDs already in target
+        target_ids = {r.get('recording_id')
+                      for r in target.get('recordings') or []
+                      if r.get('recording_id')}
+
+        moved = 0
+        for rec in source.get('recordings') or []:
+            rid = rec.get('recording_id')
+            if rid and rid not in target_ids:
+                target.setdefault('recordings', []).append(rec)
+                target_ids.add(rid)
+                moved += 1
+
+        # Merge hidden_recordings
+        src_hidden = set(source.get('hidden_recordings') or [])
+        tgt_hidden = set(target.get('hidden_recordings') or [])
+        merged_hidden = sorted(src_hidden | tgt_hidden)
+        if merged_hidden:
+            target['hidden_recordings'] = merged_hidden
+
+        # Remove source panel
+        del panels[source_panel_id]
+
+        self._write_atomic(data)
+
+        src_name = source.get('name', source_panel_id)
+        tgt_name = target.get('name', target_panel_id)
+        return True, (f"Merged '{src_name}' into '{tgt_name}': "
+                      f"{moved} recording(s) moved, source panel removed")
+
     def rename_panel(self, panel_id: str, new_name: str) -> tuple[bool, str]:
         """Rename a panel's display name in panels.json.
 

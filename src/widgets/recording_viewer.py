@@ -5,7 +5,7 @@ from datetime import datetime, date
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider,
-    QComboBox, QCheckBox, QSizePolicy, QFrame, QDialog, QSpinBox
+    QComboBox, QCheckBox, QSizePolicy, QFrame, QDialog, QSpinBox, QMessageBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPointF
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QPainterPath
@@ -444,6 +444,8 @@ class RecordingViewerWidget(QWidget):
     """Full recording viewer with playback controls, side-by-side original view,
     and multi-recording comparison."""
 
+    reclassified = pyqtSignal()  # emitted after a recording is reclassified
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._loader: RecordingLoader | None = None
@@ -456,6 +458,7 @@ class RecordingViewerWidget(QWidget):
         self._compare_playing: bool = False
         self._compare_frame: int = 0
         self._settings = None
+        self._writer = None
         self._current_recording_id: str = ""
 
         # Global temperature range (set by main window)
@@ -465,6 +468,7 @@ class RecordingViewerWidget(QWidget):
 
         # Swap dimensions state
         self._swap_dimensions: bool = False
+        self._rotation: int = 0  # 0, 90, 180, 270
 
         # Grid state
         self._show_grid: bool = False
@@ -482,6 +486,10 @@ class RecordingViewerWidget(QWidget):
     def set_settings(self, settings):
         """Set the settings reference for verified recordings."""
         self._settings = settings
+
+    def set_data_writer(self, writer):
+        """Set the data writer for reclassify support."""
+        self._writer = writer
 
     def set_temp_range(self, temp_min: float, temp_max: float):
         """Set the global temperature range for colormapping."""
@@ -512,9 +520,16 @@ class RecordingViewerWidget(QWidget):
         self.compare_btn.clicked.connect(self._open_compare_dialog)
         selector_bar.addWidget(self.compare_btn)
 
+        self.reclassify_btn = QPushButton("Reclassify...")
+        self.reclassify_btn.setToolTip("Change the repair type of this recording")
+        self.reclassify_btn.setFixedWidth(110)
+        self.reclassify_btn.clicked.connect(self._on_reclassify)
+        selector_bar.addWidget(self.reclassify_btn)
+
         self.recording_selector_label.hide()
         self.recording_combo.hide()
         self.compare_btn.hide()
+        self.reclassify_btn.hide()
         layout.addLayout(selector_bar)
 
         # Empty state
@@ -573,6 +588,13 @@ class RecordingViewerWidget(QWidget):
         self.swap_btn.setCheckable(True)
         self.swap_btn.toggled.connect(self._on_swap_toggled)
         info_bar.addWidget(self.swap_btn)
+
+        # Rotate button — cycles 0 → 90 → 180 → 270 → 0
+        self.rotate_btn = QPushButton("Rotate 0°")
+        self.rotate_btn.setToolTip("Rotate the panel view (cycles 0° → 90° → 180° → 270°)")
+        self.rotate_btn.setFixedWidth(90)
+        self.rotate_btn.clicked.connect(self._on_rotate_clicked)
+        info_bar.addWidget(self.rotate_btn)
 
         # Grid overlay controls
         self.grid_cb = QCheckBox("Grid")
@@ -749,6 +771,13 @@ class RecordingViewerWidget(QWidget):
 
     # -- Panel recordings setup --
 
+    def select_recording_by_id(self, recording_id: str):
+        """Select a specific recording by its ID in the combo box."""
+        for i, rec in enumerate(self._recordings):
+            if rec.recording_id == recording_id:
+                self.recording_combo.setCurrentIndex(i)
+                return
+
     def set_panel_recordings(self, panel_id: str, recordings: list):
         """Set up the viewer with a panel's recordings."""
         self._panel_id = panel_id
@@ -768,6 +797,7 @@ class RecordingViewerWidget(QWidget):
             self.recording_selector_label.hide()
             self.recording_combo.hide()
             self.compare_btn.hide()
+            self.reclassify_btn.hide()
             return
 
         # Build combo and find first recording that contains this panel
@@ -787,6 +817,7 @@ class RecordingViewerWidget(QWidget):
         self.recording_selector_label.setVisible(has_multiple)
         self.recording_combo.setVisible(has_multiple)
         self.compare_btn.setVisible(has_multiple)
+        self.reclassify_btn.setVisible(True)
 
         load_index = first_valid_index if first_valid_index >= 0 else 0
         self.recording_combo.blockSignals(True)
@@ -881,6 +912,73 @@ class RecordingViewerWidget(QWidget):
             self._settings.add_verified_recording(self._current_recording_id)
             self.warning_banner.hide()
 
+    def _on_reclassify(self):
+        """Reclassify the currently viewed recording."""
+        if not self._writer or not self._current_recording_id or not self._panel_id:
+            return
+
+        # Find current recording object
+        current_rec = next(
+            (r for r in self._recordings if r.recording_id == self._current_recording_id),
+            None
+        )
+
+        REPAIR_TYPES = ['initial', 'pre_repair', 'post_repair', 'check', 'internal']
+        REPAIR_LABELS = {
+            'initial': 'Initial', 'pre_repair': 'Pre Repair',
+            'post_repair': 'Post Repair', 'check': 'Check', 'internal': 'Internal',
+        }
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Reclassify Recording")
+        dlg.setMinimumWidth(300)
+        layout = QVBoxLayout(dlg)
+
+        current_type = current_rec.repair_type if current_rec else 'unknown'
+        layout.addWidget(QLabel(f"Current type: <b>{REPAIR_LABELS.get(current_type, current_type)}</b>"))
+        layout.addWidget(QLabel("New type:"))
+
+        combo = QComboBox()
+        for rt in REPAIR_TYPES:
+            combo.addItem(REPAIR_LABELS[rt], userData=rt)
+        # Pre-select current type
+        idx = REPAIR_TYPES.index(current_type) if current_type in REPAIR_TYPES else 0
+        combo.setCurrentIndex(idx)
+        layout.addWidget(combo)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dlg.reject)
+        buttons.addWidget(cancel_btn)
+        ok_btn = QPushButton("Apply")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dlg.accept)
+        buttons.addWidget(ok_btn)
+        layout.addLayout(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_type = combo.currentData()
+        if new_type == current_type:
+            return
+
+        ok, msg = self._writer.reclassify_recording(
+            self._panel_id, self._current_recording_id, new_type
+        )
+        if ok:
+            # Update local recording object so combo label refreshes
+            if current_rec:
+                current_rec.repair_type = new_type
+            idx = self.recording_combo.currentIndex()
+            if idx >= 0 and idx < len(self._recordings):
+                self._recordings[idx].repair_type = new_type
+                self.recording_combo.setItemText(idx, _recording_label(self._recordings[idx]))
+            self.reclassified.emit()
+        else:
+            QMessageBox.warning(self, "Reclassify Failed", msg)
+
     def _compute_temp_graph(self):
         """Compute temperature stats for all frames and update the graph."""
         if self._loader is None:
@@ -899,14 +997,20 @@ class RecordingViewerWidget(QWidget):
         if self._loader is None:
             return
 
-        # Get raw corrected temperature data
-        raw_corrected = self._loader.get_panel_raw_corrected(index, self._panel_id)
+        # Get raw corrected temperature data (swap_dimensions re-projects with inverted aspect ratio)
+        raw_corrected = self._loader.get_panel_raw_corrected(
+            index, self._panel_id, swap_dimensions=self._swap_dimensions
+        )
         if raw_corrected is None:
             return
 
-        # Apply swap if enabled
-        if self._swap_dimensions:
+        # Apply rotation if set
+        if self._rotation == 90:
             raw_corrected = cv2.rotate(raw_corrected, cv2.ROTATE_90_CLOCKWISE)
+        elif self._rotation == 180:
+            raw_corrected = cv2.rotate(raw_corrected, cv2.ROTATE_180)
+        elif self._rotation == 270:
+            raw_corrected = cv2.rotate(raw_corrected, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
         # Apply colormap
         rgb = self._loader.colormap_apply(raw_corrected)
@@ -1005,6 +1109,11 @@ class RecordingViewerWidget(QWidget):
 
     def _on_swap_toggled(self, checked: bool):
         self._swap_dimensions = checked
+        self._show_frame(self._current_frame)
+
+    def _on_rotate_clicked(self):
+        self._rotation = (self._rotation + 90) % 360
+        self.rotate_btn.setText(f"Rotate {self._rotation}°")
         self._show_frame(self._current_frame)
 
     def _on_grid_toggled(self, checked: bool):
@@ -1230,6 +1339,7 @@ class RecordingViewerWidget(QWidget):
         self.recording_selector_label.hide()
         self.recording_combo.hide()
         self.compare_btn.hide()
+        self.reclassify_btn.hide()
         self.warning_banner.hide()
 
     def apply_theme(self):

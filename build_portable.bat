@@ -48,6 +48,7 @@ pyinstaller --noconfirm --onedir --windowed ^
     --hidden-import "src.widgets.field_notes" ^
     --hidden-import "src.widgets.webcam_dialog" ^
     --hidden-import "src.widgets.data_manager" ^
+    --hidden-import "src.widgets.recordings_browser" ^
     --hidden-import "qrcode" ^
     --hidden-import "PIL" ^
     --hidden-import "PIL.Image" ^

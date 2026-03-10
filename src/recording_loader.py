@@ -146,7 +146,8 @@ class RecordingLoader:
         return None
 
     def get_panel_raw_corrected(self, index: int, panel_id: str,
-                                output_width: int = 400) -> Optional[np.ndarray]:
+                                output_width: int = 400,
+                                swap_dimensions: bool = False) -> Optional[np.ndarray]:
         """Get perspective-corrected raw temperature data for a panel."""
         raw = self.get_raw_frame(index)
         if raw is None or self.metadata is None:
@@ -156,7 +157,11 @@ class RecordingLoader:
         if poi is None:
             return None
 
-        return self._apply_perspective(raw, poi.roi, poi.aspect_ratio,
+        aspect_ratio = poi.aspect_ratio
+        if swap_dimensions and aspect_ratio:
+            aspect_ratio = 1.0 / aspect_ratio
+
+        return self._apply_perspective(raw, poi.roi, aspect_ratio,
                                        poi.rotation, output_width)
 
     def colormap_apply(self, raw_frame: np.ndarray) -> Optional[np.ndarray]:

@@ -42,8 +42,9 @@ class PanelDetailWidget(QWidget):
         self.field_notes_tab.set_annotation_manager(manager)
 
     def set_data_writer(self, writer):
-        """Pass data writer to the data manager tab."""
+        """Pass data writer to the data manager and playback tabs."""
         self.data_manager_tab.set_data_writer(writer)
+        self.playback_tab.set_data_writer(writer)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -148,7 +149,8 @@ class PanelDetailWidget(QWidget):
         return widget
 
     def set_panel(self, panel: PanelData, reports: list[ReportFile],
-                  repair_events: list, qr_path: str | None):
+                  repair_events: list, qr_path: str | None,
+                  all_panels: list[PanelData] | None = None):
         """Populate all tabs with panel data."""
         t = current_theme()
 
@@ -202,6 +204,7 @@ class PanelDetailWidget(QWidget):
 
         # Data Manager tab
         self.data_manager_tab.set_panel(panel, reports)
+        self.data_manager_tab.set_all_panels(all_panels or [])
 
         # QR Code tab - pass panel data for auto-generation
         self.qr_tab.set_qr_data(panel, qr_path, self._qr_dir)

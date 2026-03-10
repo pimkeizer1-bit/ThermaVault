@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QFileDialog, QMessageBox, QApplication,
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QDoubleSpinBox,
-    QPushButton, QFormLayout
+    QPushButton, QFormLayout, QFrame, QTabWidget
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
@@ -15,6 +15,7 @@ from .settings import AppSettings
 from .theme import ThemeManager, current_theme
 from .widgets.panel_list import PanelListWidget
 from .widgets.panel_detail import PanelDetailWidget
+from .widgets.recordings_browser import RecordingsBrowserWidget
 
 
 class TempRangeDialog(QDialog):
@@ -173,9 +174,98 @@ class MainWindow(QMainWindow):
         self.panel_list.panel_selected.connect(self._on_panel_selected)
         self.splitter.addWidget(self.panel_list)
 
-        # Right: panel detail
+        # Right side: triage banner + tab widget
+        right_widget = QFrame()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        # Triage banner (hidden until triage mode starts)
+        self.triage_bar = QFrame()
+        self.triage_bar.setStyleSheet(
+            "QFrame { background-color: #1a3a5c; border-bottom: 2px solid #2d7dd2; padding: 4px; }"
+        )
+        triage_layout = QHBoxLayout(self.triage_bar)
+        triage_layout.setContentsMargins(10, 6, 10, 6)
+        triage_layout.setSpacing(8)
+
+        self.triage_progress_label = QLabel("")
+        self.triage_progress_label.setStyleSheet("color: #a0c4e8; font-size: 11px; min-width: 60px;")
+        triage_layout.addWidget(self.triage_progress_label)
+
+        self.triage_info_label = QLabel("")
+        self.triage_info_label.setStyleSheet("color: #ffffff; font-weight: bold;")
+        triage_layout.addWidget(self.triage_info_label, 1)
+
+        triage_layout.addWidget(QLabel("→"))
+
+        REPAIR_LABELS = [
+            ('initial', 'Initial'), ('pre_repair', 'Pre Repair'),
+            ('post_repair', 'Post Repair'), ('check', 'Check'), ('internal', 'Internal'),
+        ]
+        self._triage_classify_btns = {}
+        for rt, label in REPAIR_LABELS:
+            btn = QPushButton(label)
+            btn.setFixedHeight(28)
+            btn.setStyleSheet(
+                "QPushButton { background-color: #2d5a8e; color: white; border: 1px solid #4a8abf; "
+                "border-radius: 3px; padding: 0 8px; } "
+                "QPushButton:hover { background-color: #3a7abf; }"
+            )
+            btn.clicked.connect(lambda checked, r=rt: self._triage_classify(r))
+            triage_layout.addWidget(btn)
+            self._triage_classify_btns[rt] = btn
+
+        hide_btn = QPushButton("Hide")
+        hide_btn.setFixedHeight(28)
+        hide_btn.setStyleSheet(
+            "QPushButton { background-color: #5c2020; color: #ffaaaa; border: 1px solid #a03030; "
+            "border-radius: 3px; padding: 0 8px; } "
+            "QPushButton:hover { background-color: #7a2020; }"
+        )
+        hide_btn.clicked.connect(self._triage_hide)
+        triage_layout.addWidget(hide_btn)
+
+        skip_btn = QPushButton("Skip →")
+        skip_btn.setFixedHeight(28)
+        skip_btn.setStyleSheet(
+            "QPushButton { background-color: #3a3a3a; color: #cccccc; border: 1px solid #555; "
+            "border-radius: 3px; padding: 0 8px; } "
+            "QPushButton:hover { background-color: #4a4a4a; }"
+        )
+        skip_btn.clicked.connect(self._triage_skip)
+        triage_layout.addWidget(skip_btn)
+
+        done_btn = QPushButton("✕ Done")
+        done_btn.setFixedHeight(28)
+        done_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #a0a0a0; border: none; padding: 0 4px; } "
+            "QPushButton:hover { color: white; }"
+        )
+        done_btn.clicked.connect(self._triage_stop)
+        triage_layout.addWidget(done_btn)
+
+        self.triage_bar.hide()
+        right_layout.addWidget(self.triage_bar)
+
+        # Tab widget with panel detail + recordings browser
+        self.right_tabs = QTabWidget()
+        self.right_tabs.setDocumentMode(True)
+
         self.panel_detail = PanelDetailWidget()
-        self.splitter.addWidget(self.panel_detail)
+        self.right_tabs.addTab(self.panel_detail, "Panel")
+
+        self.recordings_browser = RecordingsBrowserWidget()
+        self.recordings_browser.recording_selected.connect(self._on_browser_recording_selected)
+        self.recordings_browser.triage_requested.connect(self._triage_start)
+        self.right_tabs.addTab(self.recordings_browser, "All Recordings")
+
+        right_layout.addWidget(self.right_tabs, 1)
+        self.splitter.addWidget(right_widget)
+
+        # Triage state
+        self._triage_queue: list[tuple[str, str]] = []  # [(panel_id, recording_id)]
+        self._triage_index: int = 0
 
         # Set initial splitter sizes
         self.splitter.setSizes([280, 920])
@@ -446,11 +536,21 @@ class MainWindow(QMainWindow):
         self.panel_detail.data_manager_tab.data_changed.connect(
             self._refresh_preserving_selection
         )
+        self.panel_detail.playback_tab.reclassified.connect(
+            self._refresh_preserving_selection
+        )
 
         # Populate panel list
         panels = self.data_loader.get_all_panels()
         self.panel_list.set_panels(panels)
         self.panel_list.set_path(root_path)
+
+        # Populate recordings browser
+        reports_by_panel = {
+            p.panel_id: self.data_loader.get_reports(p.panel_id)
+            for p in panels
+        }
+        self.recordings_browser.set_data(panels, reports_by_panel)
 
         # Clear detail view
         self.panel_detail.clear()
@@ -470,11 +570,106 @@ class MainWindow(QMainWindow):
         repair_events = self.data_loader.get_repair_history(panel_id)
         qr_path = self.data_loader.get_qr_path(panel_id)
 
-        self.panel_detail.set_panel(panel, reports, repair_events, qr_path)
+        all_panels = list(self.data_loader.panels.values())
+        self.panel_detail.set_panel(panel, reports, repair_events, qr_path,
+                                    all_panels=all_panels)
         self.statusBar().showMessage(
             f"Panel: {panel.name}  |  {len(panel.recordings)} recordings  |  "
             f"{len([r for r in reports if r.is_pdf])} reports"
         )
+
+    def _on_browser_recording_selected(self, panel_id: str, recording_id: str):
+        """Navigate to a panel+recording when double-clicked in the recordings browser."""
+        # Switch to Panel tab
+        self.right_tabs.setCurrentIndex(0)
+
+        # Select the panel in the list
+        for i in range(self.panel_list.list_widget.count()):
+            item = self.panel_list.list_widget.item(i)
+            if item and item.data(Qt.ItemDataRole.UserRole) == panel_id:
+                self.panel_list.list_widget.setCurrentItem(item)
+                break
+
+        # Switch to Playback tab and select the recording
+        playback_tab_index = self.panel_detail.tabs.indexOf(self.panel_detail.playback_tab)
+        self.panel_detail.tabs.setCurrentIndex(playback_tab_index)
+        self.panel_detail.playback_tab.select_recording_by_id(recording_id)
+
+    # -- Triage mode --
+
+    def _triage_start(self, queue: list):
+        """Begin triage mode with a list of (panel_id, recording_id) tuples."""
+        self._triage_queue = queue
+        self._triage_index = 0
+        if not queue:
+            return
+        self.triage_bar.show()
+        self.right_tabs.setCurrentIndex(0)
+        self._triage_show_current()
+
+    def _triage_show_current(self):
+        if self._triage_index >= len(self._triage_queue):
+            self._triage_stop(finished=True)
+            return
+
+        panel_id, recording_id = self._triage_queue[self._triage_index]
+        total = len(self._triage_queue)
+        self.triage_progress_label.setText(
+            f"{self._triage_index + 1} / {total}"
+        )
+
+        # Look up panel name and recording date
+        panel = self.data_loader.get_panel(panel_id) if self.data_loader else None
+        panel_name = panel.name if panel else panel_id
+        rec_date = ""
+        if panel:
+            for r in panel.recordings:
+                if r.recording_id == recording_id:
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(r.timestamp)
+                        rec_date = dt.strftime("  %Y-%m-%d %H:%M")
+                    except (ValueError, TypeError):
+                        pass
+                    break
+        self.triage_info_label.setText(f"{panel_name}{rec_date}")
+
+        # Navigate to the recording
+        self._on_browser_recording_selected(panel_id, recording_id)
+
+    def _triage_classify(self, repair_type: str):
+        if self._triage_index >= len(self._triage_queue):
+            return
+        panel_id, recording_id = self._triage_queue[self._triage_index]
+        if self._data_writer:
+            self._data_writer.reclassify_recording(panel_id, recording_id, repair_type)
+        self._triage_advance()
+
+    def _triage_hide(self):
+        if self._triage_index >= len(self._triage_queue):
+            return
+        panel_id, recording_id = self._triage_queue[self._triage_index]
+        if self._data_writer:
+            self._data_writer.delete_recordings(panel_id, [recording_id], delete_files=False)
+        self._triage_advance()
+
+    def _triage_skip(self):
+        self._triage_advance()
+
+    def _triage_advance(self):
+        self._triage_index += 1
+        if self._triage_index >= len(self._triage_queue):
+            self._triage_stop(finished=True)
+        else:
+            self._triage_show_current()
+
+    def _triage_stop(self, finished: bool = False):
+        self.triage_bar.hide()
+        self._refresh_preserving_selection()
+        if finished and self._triage_queue:
+            self.statusBar().showMessage(
+                f"Triage complete — {len(self._triage_queue)} recording(s) reviewed"
+            )
 
     def _refresh(self):
         """Reload data from the current folder."""

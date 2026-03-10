@@ -87,12 +87,16 @@ class DataManagerWidget(QWidget):
         super().__init__(parent)
         self._writer = None
         self._panel: PanelData | None = None
+        self._all_panels: list[PanelData] = []
         self._reports: list[ReportFile] = []
         self._recordings: list[RecordingData] = []
         self._init_ui()
 
     def set_data_writer(self, writer):
         self._writer = writer
+
+    def set_all_panels(self, panels: list[PanelData]):
+        self._all_panels = panels
 
     def _init_ui(self):
         t = current_theme()
@@ -170,6 +174,11 @@ class DataManagerWidget(QWidget):
         self.rename_btn.setToolTip("Rename this panel in the database")
         self.rename_btn.clicked.connect(self._on_rename_panel)
         actions_layout.addWidget(self.rename_btn)
+
+        self.merge_btn = QPushButton("Merge into...")
+        self.merge_btn.setToolTip("Move all recordings from this panel into another panel and remove this one")
+        self.merge_btn.clicked.connect(self._on_merge_panel)
+        actions_layout.addWidget(self.merge_btn)
 
         actions_layout.addStretch()
 
@@ -515,6 +524,62 @@ class DataManagerWidget(QWidget):
         )
         self.status_label.setText(msg)
         self.data_changed.emit()
+
+    def _on_merge_panel(self):
+        if not self._writer or not self._panel:
+            return
+
+        others = [p for p in self._all_panels if p.panel_id != self._panel.panel_id]
+        if not others:
+            QMessageBox.information(self, "No Other Panels",
+                                    "There are no other panels to merge into.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Merge Panel")
+        dlg.setMinimumWidth(400)
+        layout = QVBoxLayout(dlg)
+
+        layout.addWidget(QLabel(
+            f"Move all recordings from <b>{self._panel.name}</b> into:"
+        ))
+
+        combo = QComboBox()
+        for p in sorted(others, key=lambda x: x.name.lower()):
+            combo.addItem(f"{p.name}  ({p.panel_id})", userData=p.panel_id)
+        layout.addWidget(combo)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dlg.reject)
+        buttons.addWidget(cancel_btn)
+        ok_btn = QPushButton("Merge")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dlg.accept)
+        buttons.addWidget(ok_btn)
+        layout.addLayout(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        target_panel_id = combo.currentData()
+        target_name = combo.currentText().split("  (")[0]
+
+        reply = QMessageBox.question(
+            self, "Confirm Merge",
+            f"Merge all recordings from '{self._panel.name}' into '{target_name}'?\n\n"
+            f"'{self._panel.name}' will be permanently removed from the database.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        ok, msg = self._writer.merge_panels(self._panel.panel_id, target_panel_id)
+        self.status_label.setText(msg)
+        if ok:
+            self.data_changed.emit()
 
     def _on_rename_panel(self):
         if not self._writer or not self._panel:
