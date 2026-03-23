@@ -16,6 +16,7 @@ from .theme import ThemeManager, current_theme
 from .widgets.panel_list import PanelListWidget
 from .widgets.panel_detail import PanelDetailWidget
 from .widgets.recordings_browser import RecordingsBrowserWidget
+from .widgets.qr_display import QRBatchPrintDialog
 
 
 class TempRangeDialog(QDialog):
@@ -131,6 +132,11 @@ class MainWindow(QMainWindow):
         import_action = QAction("&Import recordings from folder...", self)
         import_action.triggered.connect(self._import_from_folder)
         file_menu.addAction(import_action)
+
+        print_qr_action = QAction("Print QR Labels...", self)
+        print_qr_action.setToolTip("Print QR labels for multiple panels at once")
+        print_qr_action.triggered.connect(self._open_qr_batch_print)
+        file_menu.addAction(print_qr_action)
 
         file_menu.addSeparator()
 
@@ -701,6 +707,19 @@ class MainWindow(QMainWindow):
         # Restore tab
         if current_tab >= 0:
             self.panel_detail.tabs.setCurrentIndex(current_tab)
+
+    def _open_qr_batch_print(self):
+        """Open batch QR print dialog for all loaded panels."""
+        if not hasattr(self, 'data_loader') or not self.data_loader:
+            QMessageBox.information(self, "No Data", "Open a data folder first.")
+            return
+        panels = list(self.data_loader.panels.values())
+        if not panels:
+            QMessageBox.information(self, "No Panels", "No panels loaded.")
+            return
+        qr_dir = getattr(self.panel_detail, '_qr_dir', None)
+        dlg = QRBatchPrintDialog(panels, qr_dir, parent=self)
+        dlg.exec()
 
     def _import_from_folder(self):
         """Import new recordings from another ThermalPanel data folder."""

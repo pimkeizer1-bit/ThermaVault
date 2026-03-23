@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
-    QMessageBox, QInputDialog
+    QMessageBox, QInputDialog, QDialog, QScrollArea, QCheckBox, QApplication
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QImage
@@ -463,3 +463,271 @@ class QRDisplayWidget(QWidget):
             f"color: {t.text_secondary}; font-size: 11px; "
             f"font-family: monospace; padding: 8px;"
         )
+
+
+class QRBatchPrintDialog(QDialog):
+    """Dialog to select multiple panels and print their QR labels in one batch."""
+
+    DYMO_LABEL_NAME = "30323"
+    DYMO_LABEL_WIDTH_10MM = 540
+    DYMO_LABEL_LENGTH_10MM = 1020
+
+    def __init__(self, panels: list, qr_dir: str | None, parent=None):
+        super().__init__(parent)
+        self._panels = panels
+        self._qr_dir = qr_dir
+        self._checkboxes: dict = {}  # panel_id -> QCheckBox
+        self.setWindowTitle("Print QR Labels")
+        self.setMinimumWidth(420)
+        self.setMinimumHeight(480)
+        self._init_ui()
+
+    def _init_ui(self):
+        t = current_theme()
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        layout.addWidget(QLabel("Select panels to print QR labels for:"))
+
+        # Select all / none row
+        btn_row = QHBoxLayout()
+        all_btn = QPushButton("Select All")
+        all_btn.setFixedWidth(90)
+        all_btn.clicked.connect(lambda: self._set_all(True))
+        btn_row.addWidget(all_btn)
+
+        none_btn = QPushButton("None")
+        none_btn.setFixedWidth(70)
+        none_btn.clicked.connect(lambda: self._set_all(False))
+        btn_row.addWidget(none_btn)
+
+        self._count_label = QLabel("")
+        self._count_label.setStyleSheet(f"color: {t.text_secondary}; font-size: 11px;")
+        btn_row.addStretch()
+        btn_row.addWidget(self._count_label)
+        layout.addLayout(btn_row)
+
+        # Scrollable panel list
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(4, 4, 4, 4)
+        container_layout.setSpacing(2)
+
+        for panel in sorted(self._panels, key=lambda p: p.name.lower()):
+            cb = QCheckBox(f"{panel.name}  ({panel.panel_id})")
+            cb.setChecked(True)
+            cb.toggled.connect(self._update_count)
+            self._checkboxes[panel.panel_id] = cb
+            container_layout.addWidget(cb)
+
+        container_layout.addStretch()
+        scroll.setWidget(container)
+        layout.addWidget(scroll, 1)
+
+        # Status label
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet(f"color: {t.text_secondary}; font-size: 11px;")
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._status_label)
+
+        # Print / Close buttons
+        action_row = QHBoxLayout()
+        action_row.addStretch()
+
+        self._print_btn = QPushButton("Print Selected")
+        self._print_btn.setDefault(True)
+        self._print_btn.setFixedWidth(130)
+        self._print_btn.clicked.connect(self._print_selected)
+        action_row.addWidget(self._print_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(80)
+        close_btn.clicked.connect(self.reject)
+        action_row.addWidget(close_btn)
+
+        layout.addLayout(action_row)
+        self._update_count()
+
+    def _set_all(self, checked: bool):
+        for cb in self._checkboxes.values():
+            cb.blockSignals(True)
+            cb.setChecked(checked)
+            cb.blockSignals(False)
+        self._update_count()
+
+    def _update_count(self):
+        n = sum(1 for cb in self._checkboxes.values() if cb.isChecked())
+        total = len(self._checkboxes)
+        self._count_label.setText(f"{n} of {total} selected")
+        self._print_btn.setEnabled(n > 0)
+
+    def _get_selected_panels(self) -> list:
+        id_to_panel = {p.panel_id: p for p in self._panels}
+        return [id_to_panel[pid] for pid, cb in self._checkboxes.items()
+                if cb.isChecked() and pid in id_to_panel]
+
+    def _print_selected(self):
+        selected = self._get_selected_panels()
+        if not selected:
+            return
+
+        if not HAS_WIN32PRINT:
+            QMessageBox.warning(
+                self, "Print Error",
+                "Label printing requires the pywin32 package.\n"
+                "Install with: pip install pywin32"
+            )
+            return
+
+        printer_name = self._find_dymo_printer()
+        if not printer_name:
+            QMessageBox.warning(
+                self, "Print Error",
+                "No DYMO printer found.\n\n"
+                "Check that the DYMO LabelWriter is connected\n"
+                "and the DYMO Connect driver is installed."
+            )
+            return
+
+        self._print_btn.setEnabled(False)
+        try:
+            devmode = self._get_dymo_devmode(printer_name)
+            raw_hdc = win32gui.CreateDC('WINSPOOL', printer_name, devmode)
+            hdc = win32ui.CreateDCFromHandle(raw_hdc)
+            width_px = hdc.GetDeviceCaps(win32con.HORZRES)
+            height_px = hdc.GetDeviceCaps(win32con.VERTRES)
+
+            hdc.StartDoc("ThermaVault QR Labels")
+
+            failed = []
+            for i, panel in enumerate(selected):
+                self._status_label.setText(
+                    f"Printing {i + 1}/{len(selected)}: {panel.name}..."
+                )
+                QApplication.processEvents()
+
+                qr_text = format_panel_qr_text(panel)
+                qr_rgb = generate_qr_image(qr_text, size=400)
+                if qr_rgb is None:
+                    failed.append(panel.name)
+                    continue
+
+                hdc.StartPage()
+                label_img = self._build_label_pil(qr_rgb, panel, width_px, height_px)
+                dib = ImageWin.Dib(label_img)
+                dib.draw(hdc.GetHandleOutput(), (0, 0, width_px, height_px))
+                hdc.EndPage()
+
+            hdc.EndDoc()
+            hdc.DeleteDC()
+
+            msg = f"Printed {len(selected) - len(failed)} label(s) to {printer_name}"
+            if failed:
+                msg += f"\nFailed: {', '.join(failed)}"
+            self._status_label.setText(msg)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Print Error", f"Could not print:\n{e}")
+            self._status_label.setText("Print failed.")
+        finally:
+            self._update_count()  # re-enables print button if selection > 0
+
+    def _find_dymo_printer(self) -> str | None:
+        if not HAS_WIN32PRINT:
+            return None
+        flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
+        all_printers = [p[2] for p in win32print.EnumPrinters(flags)]
+        dymo_printers = [p for p in all_printers if "dymo" in p.lower()]
+        if not dymo_printers:
+            return None
+        elif len(dymo_printers) == 1:
+            return dymo_printers[0]
+        else:
+            choice, ok = QInputDialog.getItem(
+                self, "Select DYMO Printer",
+                "Multiple DYMO printers found. Select one:",
+                dymo_printers, 0, False
+            )
+            return choice if ok else None
+
+    def _get_dymo_devmode(self, printer_name: str):
+        hprinter = win32print.OpenPrinter(printer_name)
+        try:
+            devmode = win32print.GetPrinter(hprinter, 2)['pDevMode']
+            port = win32print.GetPrinter(hprinter, 2).get('pPortName', '')
+            paper_ids = win32print.DeviceCapabilities(printer_name, port, 2)
+            paper_names = win32print.DeviceCapabilities(printer_name, port, 16)
+            for i in range(len(paper_ids)):
+                if i < len(paper_names) and self.DYMO_LABEL_NAME in paper_names[i]:
+                    devmode.PaperSize = paper_ids[i]
+                    break
+            devmode.PaperWidth = self.DYMO_LABEL_WIDTH_10MM
+            devmode.PaperLength = self.DYMO_LABEL_LENGTH_10MM
+            DM_PAPERSIZE = 0x2
+            DM_PAPERLENGTH = 0x4
+            DM_PAPERWIDTH = 0x8
+            devmode.Fields = devmode.Fields | DM_PAPERSIZE | DM_PAPERLENGTH | DM_PAPERWIDTH
+            DM_IN_BUFFER = 8
+            DM_OUT_BUFFER = 2
+            win32print.DocumentProperties(
+                0, hprinter, printer_name, devmode, devmode,
+                DM_IN_BUFFER | DM_OUT_BUFFER,
+            )
+            return devmode
+        finally:
+            win32print.ClosePrinter(hprinter)
+
+    def _build_label_pil(self, qr_rgb: np.ndarray, panel: PanelData,
+                         img_w: int, img_h: int):
+        from PIL import Image, ImageDraw, ImageFont
+        label = Image.new("RGB", (img_w, img_h), "white")
+        draw = ImageDraw.Draw(label)
+        qr_pil = Image.fromarray(qr_rgb).convert("RGB")
+
+        panel_text = panel.name if panel.name and panel.name != panel.panel_id else panel.panel_id
+
+        short_side = min(img_w, img_h)
+        font_size = max(12, int(short_side * 0.045))
+        try:
+            font = ImageFont.truetype("arial.ttf", font_size)
+        except OSError:
+            font = ImageFont.load_default()
+
+        bbox = draw.textbbox((0, 0), "Xg", font=font)
+        text_h = (bbox[3] - bbox[1]) + int(short_side * 0.01)
+        margin = int(short_side * 0.03)
+
+        if img_h >= img_w:
+            cell_h = img_h // 2
+            qr_max = min(img_w - 2 * margin, cell_h - text_h - 2 * margin)
+            qr_size = int(qr_max * 0.55)
+            qr_resized = qr_pil.resize((qr_size, qr_size), Image.NEAREST)
+            for row in range(2):
+                cy = row * cell_h
+                qr_x = (img_w - qr_size) // 2
+                qr_y = cy + (cell_h - qr_size - text_h) // 2
+                label.paste(qr_resized, (qr_x, qr_y))
+                tw = draw.textbbox((0, 0), panel_text, font=font)
+                tx = (img_w - (tw[2] - tw[0])) // 2
+                ty = qr_y + qr_size + margin // 3
+                draw.text((tx, ty), panel_text, fill="black", font=font)
+        else:
+            cell_w = img_w // 2
+            qr_max = min(cell_w - 2 * margin, img_h - text_h - 2 * margin)
+            qr_size = int(qr_max * 0.55)
+            qr_resized = qr_pil.resize((qr_size, qr_size), Image.NEAREST)
+            for col in range(2):
+                cx = col * cell_w
+                qr_x = cx + (cell_w - qr_size) // 2
+                qr_y = (img_h - qr_size - text_h) // 2
+                label.paste(qr_resized, (qr_x, qr_y))
+                tw = draw.textbbox((0, 0), panel_text, font=font)
+                tx = cx + (cell_w - (tw[2] - tw[0])) // 2
+                ty = qr_y + qr_size + margin // 3
+                draw.text((tx, ty), panel_text, fill="black", font=font)
+
+        return label
