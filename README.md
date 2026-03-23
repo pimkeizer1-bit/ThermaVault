@@ -2,6 +2,8 @@
 
 A desktop application for browsing, analyzing, and managing thermal imaging recordings from heating panels. Built with PyQt6, it provides thermal video playback, temperature visualization, repair tracking, and panel data management.
 
+ThermaVault is a **viewer and data management tool only** — it does not interface with thermal cameras. Recordings must be captured separately (e.g. by the ThermalPanel acquisition system) and provided as `.npz`/`.json` files on disk.
+
 ## Features
 
 - **Thermal playback** — view recordings with configurable colormaps (ironbow, rainbow, grayscale, hot, cool/warm, plasma) and adjustable temperature ranges
