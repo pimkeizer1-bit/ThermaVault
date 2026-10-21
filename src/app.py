@@ -21,6 +21,7 @@ from .widgets.panel_detail import PanelDetailWidget
 from .widgets.recordings_browser import RecordingsBrowserWidget
 from .widgets.qr_display import QRBatchPrintDialog
 from .widgets.export_dialog import ExportPackageDialog
+from .widgets.import_dialog import ImportDialog
 
 
 class TempRangeDialog(QDialog):
@@ -136,7 +137,8 @@ class MainWindow(QMainWindow):
         refresh_action.triggered.connect(self._refresh)
         file_menu.addAction(refresh_action)
 
-        import_action = QAction("&Import recordings from folder...", self)
+        import_action = QAction("&Import Data...", self)
+        import_action.setToolTip("Add missing data from an Export Package zip or another data folder")
         import_action.triggered.connect(self._import_from_folder)
         file_menu.addAction(import_action)
 
@@ -735,44 +737,16 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _import_from_folder(self):
-        """Import new recordings from another ThermalPanel data folder."""
-        if not self.settings.last_data_folder:
+        """Import missing data from an Export Package zip or another data folder."""
+        if not self.settings.last_data_folder or not getattr(self, '_data_writer', None):
             QMessageBox.warning(self, "No Data Loaded",
                                 "Please open a data folder first before importing.")
             return
 
-        if not hasattr(self, '_data_writer') or not self._data_writer:
-            QMessageBox.warning(self, "No Data Loaded",
-                                "Please open a data folder first before importing.")
-            return
-
-        folder = QFileDialog.getExistingDirectory(
-            self, "Select source folder to import from",
-            "", QFileDialog.Option.ShowDirsOnly
-        )
-        if not folder:
-            return
-
-        # Confirm
-        reply = QMessageBox.question(
-            self, "Import Recordings",
-            f"Import new recordings from:\n{folder}\n\n"
-            f"Into current database:\n{self.settings.last_data_folder}\n\n"
-            "This will copy new recording folders and add them to your database. "
-            "Your existing cleanup (repair types, hidden recordings) will be preserved.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        ok, msg = self._data_writer.import_from_folder(folder, copy_files=True)
-
-        if ok:
-            QMessageBox.information(self, "Import Complete", msg)
+        dlg = ImportDialog(self._data_writer, parent=self)
+        dlg.exec()
+        if dlg.imported:
             self._refresh_preserving_selection()
-        else:
-            QMessageBox.warning(self, "Import Failed", msg)
 
     def _export_package(self):
         """Zip the app and the current data folder for moving to another PC."""

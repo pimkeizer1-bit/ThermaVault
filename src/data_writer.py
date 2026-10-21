@@ -4,7 +4,7 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 
 class DataWriter:
@@ -400,17 +400,23 @@ class DataWriter:
 
         return True, f"Renamed '{old_name}' → '{new_name}'"
 
-    def import_from_folder(self, source_path: str,
-                           copy_files: bool = True) -> tuple[bool, str]:
-        """Import new recordings from another ThermalPanel data folder.
+    def import_from_folder(self, source_path: str, copy_files: bool = True,
+                           progress: Optional[Callable[[int, int, str], None]] = None
+                           ) -> tuple[bool, str]:
+        """Import new data from another ThermalPanel data folder.
 
         Merges recordings from source panels.json into the local database.
         Only adds recordings that don't already exist (by recording_id).
         Preserves local repair_types, hidden_recordings, and other edits.
+        With copy_files, also copies missing recording folders, reports,
+        captures, QR codes and field notes (annotations + photos); field
+        notes that exist on both sides are merged by comment/photo id.
+        Existing local files are never overwritten.
 
         Args:
             source_path: Path to the source ThermalPanel data folder.
-            copy_files: If True, copy recording folders and report files.
+            copy_files: If True, copy recording folders and other data files.
+            progress: Called as progress(bytes_done, bytes_total, current_file).
 
         Returns:
             (success, message) tuple.
@@ -418,7 +424,6 @@ class DataWriter:
         source_root = Path(source_path)
         source_panels_file = source_root / "panel_data" / "panels.json"
         source_recordings_dir = source_root / "recordings"
-        source_reports_dir = source_root / "reports"
 
         if not source_panels_file.exists():
             return False, "Source folder has no panel_data/panels.json"
@@ -434,19 +439,19 @@ class DataWriter:
         except Exception as e:
             return False, f"Could not read local panels.json: {e}"
 
-        self._backup()
-
         recordings_added = 0
         recordings_skipped = 0
         panels_added = 0
-        files_copied = 0
+        # Recording folders missing locally: recording_id -> source folder
+        rec_copies: dict[str, Path] = {}
 
         for panel_id, source_panel in source_data.get('panels', {}).items():
             local_panel = local_data.get('panels', {}).get(panel_id)
             if local_panel is None:
-                # New panel — import it entirely
-                local_data.setdefault('panels', {})[panel_id] = source_panel
-                local_panel = source_panel
+                # New panel — import it, its recordings are added below
+                local_panel = dict(source_panel)
+                local_panel['recordings'] = []
+                local_data.setdefault('panels', {})[panel_id] = local_panel
                 panels_added += 1
 
             # Build set of recording IDs already in local DB
@@ -464,50 +469,37 @@ class DataWriter:
                 if not rid:
                     continue
 
-                if rid in local_rec_ids or rid in hidden:
+                if rid in hidden:
                     recordings_skipped += 1
                     continue
 
-                # New recording — add it to local DB
-                local_panel.setdefault('recordings', []).append(src_rec)
-                local_rec_ids.add(rid)
-                recordings_added += 1
+                if rid in local_rec_ids:
+                    recordings_skipped += 1
+                else:
+                    # New recording — add it to local DB
+                    local_panel.setdefault('recordings', []).append(src_rec)
+                    local_rec_ids.add(rid)
+                    recordings_added += 1
 
-                # Copy recording folder if requested
-                if copy_files and source_recordings_dir.exists():
-                    src_rec_dir = source_recordings_dir / rid
-                    dst_rec_dir = self.recordings_dir / rid
-                    if src_rec_dir.exists() and not dst_rec_dir.exists():
-                        shutil.copytree(str(src_rec_dir), str(dst_rec_dir))
-                        files_copied += 1
-
-                # Copy matching report files
-                if copy_files and source_reports_dir.exists():
-                    self.reports_dir.mkdir(parents=True, exist_ok=True)
-                    for report_file in source_reports_dir.iterdir():
-                        if report_file.is_file() and rid in report_file.stem:
-                            dst_report = self.reports_dir / report_file.name
-                            if not dst_report.exists():
-                                shutil.copy2(str(report_file), str(dst_report))
+                # Copy the recording folder if it is missing locally
+                src_rec_dir = source_recordings_dir / rid
+                if src_rec_dir.is_dir() and not (self.recordings_dir / rid).exists():
+                    rec_copies[rid] = src_rec_dir
 
         # Also scan source recording folders for recordings not in source panels.json
         # (the thermal-cam-software may not have saved them to panels.json yet)
         if copy_files and source_recordings_dir.exists():
-            # Build a map of panel_ids we have locally
             local_panels = local_data.get('panels', {})
 
             for rec_folder in sorted(source_recordings_dir.iterdir()):
                 if not rec_folder.is_dir():
                     continue
                 rid = rec_folder.name
+                if rid in rec_copies or (self.recordings_dir / rid).exists():
+                    continue
                 meta_path = rec_folder / "metadata.json"
                 frames_path = rec_folder / "frames.npz"
                 if not meta_path.exists() or not frames_path.exists():
-                    continue
-
-                # Already copied?
-                dst_rec_dir = self.recordings_dir / rid
-                if dst_rec_dir.exists():
                     continue
 
                 # Check if this recording references any local panel
@@ -517,33 +509,86 @@ class DataWriter:
                 except (json.JSONDecodeError, OSError):
                     continue
 
-                references_local_panel = False
                 for poi in meta.get('pois') or []:
                     pid = poi.get('panel_id')
                     if pid and pid in local_panels:
-                        # Check it's not hidden
                         hidden = set(local_panels[pid].get('hidden_recordings') or [])
                         if rid not in hidden:
-                            references_local_panel = True
+                            rec_copies[rid] = rec_folder
                             break
 
-                if references_local_panel:
-                    shutil.copytree(str(rec_folder), str(dst_rec_dir))
-                    files_copied += 1
+        # Plan all file copies as (source, destination, category)
+        copies: list[tuple[Path, Path, str]] = []
+        ann_merges: list[tuple[Path, Path]] = []
+        if copy_files:
+            for rid, src_dir in rec_copies.items():
+                for f in _walk_files(src_dir):
+                    copies.append((f, self.recordings_dir / rid / f.relative_to(src_dir),
+                                   'recordings'))
+            for sub in ("reports", "captures", "QR codes"):
+                src_dir = source_root / sub
+                for f in _walk_files(src_dir):
+                    dst = self.root / sub / f.relative_to(src_dir)
+                    if not dst.exists():
+                        copies.append((f, dst, sub))
 
-        if panels_added == 0 and recordings_added == 0 and files_copied == 0:
+            # Field notes: copy missing photos, merge annotations.json afterwards
+            src_ann = source_root / "panel_data" / "annotations"
+            local_ann = self.root / "panel_data" / "annotations"
+            for f in _walk_files(src_ann):
+                rel = f.relative_to(src_ann)
+                dst = local_ann / rel
+                if f.name == "annotations.json" and len(rel.parts) == 3:
+                    ann_merges.append((f, dst))
+                elif not dst.exists():
+                    copies.append((f, dst, 'annotations'))
+
+        total = sum(src.stat().st_size for src, _, _ in copies)
+        done = 0
+        counts: dict[str, int] = {}
+        for src, dst, category in copies:
+            if progress:
+                progress(done, total, src.relative_to(source_root).as_posix())
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(src), str(dst))
+            done += src.stat().st_size
+            counts[category] = counts.get(category, 0) + 1
+        if progress:
+            progress(total, total, "")
+
+        notes_added = notes_merged = 0
+        for src, dst in ann_merges:
+            result = _merge_annotations(src, dst)
+            if result == 'added':
+                notes_added += 1
+            elif result == 'merged':
+                notes_merged += 1
+
+        if not (panels_added or recordings_added or copies or notes_added or notes_merged):
             return True, f"No new data found ({recordings_skipped} recording(s) already in database)"
 
         if panels_added > 0 or recordings_added > 0:
+            self._backup()
             self._write_atomic(local_data)
 
+        reports = {_report_key(dst) for _, dst, c in copies if c == 'reports'}
         parts = []
         if panels_added:
             parts.append(f"{panels_added} new panel(s)")
         if recordings_added:
             parts.append(f"{recordings_added} new recording(s)")
-        if files_copied:
-            parts.append(f"{files_copied} recording folder(s) copied")
+        if copy_files and rec_copies:
+            parts.append(f"{len(rec_copies)} recording folder(s) copied")
+        if reports:
+            parts.append(f"{len(reports)} report(s)")
+        if notes_added:
+            parts.append(f"field notes for {notes_added} recording(s)")
+        if notes_merged:
+            parts.append(f"field notes merged into {notes_merged} recording(s)")
+        if counts.get('captures'):
+            parts.append(f"{counts['captures']} capture file(s)")
+        if counts.get('QR codes'):
+            parts.append(f"{counts['QR codes']} QR code(s)")
         if recordings_skipped:
             parts.append(f"{recordings_skipped} existing skipped")
         msg = "Imported: " + ", ".join(parts)
@@ -559,3 +604,64 @@ class DataWriter:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
             return None
+
+
+def _walk_files(folder: Path) -> list[Path]:
+    """All files below folder (sorted, temp files skipped); empty if it doesn't exist."""
+    if not folder.is_dir():
+        return []
+    return sorted(p for p in folder.rglob('*')
+                  if p.is_file() and not p.name.endswith('.tmp') and p.name.lower() != 'nul')
+
+
+def _report_key(path: Path) -> str:
+    """A report is a PDF plus its _data.json; count the pair once."""
+    name = path.name
+    if name.endswith('_data.json'):
+        return name[:-len('_data.json')]
+    return path.stem
+
+
+def _merge_annotations(src: Path, dst: Path) -> str:
+    """Merge one source annotations.json into the local one.
+
+    Comments and photos are matched by id; local entries are never changed.
+    Returns 'added' (no local notes yet), 'merged' (new entries added) or ''.
+    """
+    try:
+        with open(src, 'r', encoding='utf-8') as f:
+            src_data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return ''
+
+    if not dst.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(src), str(dst))
+        return 'added'
+
+    try:
+        with open(dst, 'r', encoding='utf-8') as f:
+            local = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return ''  # leave an unreadable local file alone
+
+    changed = False
+    for key in ('comments', 'photos'):
+        local_items = local.setdefault(key, [])
+        known = {item.get('id') for item in local_items}
+        for item in src_data.get(key) or []:
+            if item.get('id') and item['id'] not in known:
+                local_items.append(item)
+                known.add(item['id'])
+                changed = True
+    if not changed:
+        return ''
+
+    for key in ('comments', 'photos'):
+        local[key].sort(key=lambda item: item.get('timestamp', ''))
+    local['modified'] = datetime.now().isoformat()
+    tmp = dst.with_suffix('.tmp')
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(local, f, indent=2, ensure_ascii=False)
+    tmp.replace(dst)
+    return 'merged'
