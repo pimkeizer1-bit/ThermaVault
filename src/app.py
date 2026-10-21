@@ -5,11 +5,14 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QDoubleSpinBox,
     QPushButton, QFormLayout, QFrame, QTabWidget
 )
+from pathlib import Path
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 
 from .data_loader import DataLoader
 from .data_writer import DataWriter
+from .exporter import bundled_data_folder
 from .annotations import AnnotationManager
 from .settings import AppSettings
 from .theme import ThemeManager, current_theme
@@ -17,6 +20,7 @@ from .widgets.panel_list import PanelListWidget
 from .widgets.panel_detail import PanelDetailWidget
 from .widgets.recordings_browser import RecordingsBrowserWidget
 from .widgets.qr_display import QRBatchPrintDialog
+from .widgets.export_dialog import ExportPackageDialog
 
 
 class TempRangeDialog(QDialog):
@@ -102,8 +106,11 @@ class MainWindow(QMainWindow):
             self.settings.temp_range_max
         )
 
-        # Auto-load last folder
+        # Auto-load last folder; on a new PC (or when that drive is gone) fall
+        # back to the data folder shipped next to the app in an export package.
         last_folder = self.settings.last_data_folder
+        if not last_folder or not Path(last_folder, "panel_data", "panels.json").exists():
+            last_folder = bundled_data_folder() or last_folder
         if last_folder:
             self._load_data(last_folder)
 
@@ -132,6 +139,12 @@ class MainWindow(QMainWindow):
         import_action = QAction("&Import recordings from folder...", self)
         import_action.triggered.connect(self._import_from_folder)
         file_menu.addAction(import_action)
+
+        export_action = QAction("&Export Package...", self)
+        export_action.setShortcut("Ctrl+E")
+        export_action.setToolTip("Zip the app and all data to move to another PC")
+        export_action.triggered.connect(self._export_package)
+        file_menu.addAction(export_action)
 
         print_qr_action = QAction("Print QR Labels...", self)
         print_qr_action.setToolTip("Print QR labels for multiple panels at once")
@@ -760,6 +773,13 @@ class MainWindow(QMainWindow):
             self._refresh_preserving_selection()
         else:
             QMessageBox.warning(self, "Import Failed", msg)
+
+    def _export_package(self):
+        """Zip the app and the current data folder for moving to another PC."""
+        if self.data_loader is None or not self.settings.last_data_folder:
+            QMessageBox.information(self, "No Data", "Open a data folder first.")
+            return
+        ExportPackageDialog(self.settings.last_data_folder, parent=self).exec()
 
     def _toggle_theme(self):
         ThemeManager.instance().toggle()

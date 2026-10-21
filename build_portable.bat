@@ -35,6 +35,7 @@ pyinstaller --noconfirm --onedir --windowed ^
     --hidden-import "src.models" ^
     --hidden-import "src.qr_generator" ^
     --hidden-import "src.annotations" ^
+    --hidden-import "src.exporter" ^
     --hidden-import "src.utils" ^
     --hidden-import "src.utils.file_matching" ^
     --hidden-import "src.widgets" ^
@@ -49,6 +50,7 @@ pyinstaller --noconfirm --onedir --windowed ^
     --hidden-import "src.widgets.webcam_dialog" ^
     --hidden-import "src.widgets.data_manager" ^
     --hidden-import "src.widgets.recordings_browser" ^
+    --hidden-import "src.widgets.export_dialog" ^
     --hidden-import "qrcode" ^
     --hidden-import "PIL" ^
     --hidden-import "PIL.Image" ^
