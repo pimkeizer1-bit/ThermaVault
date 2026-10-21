@@ -13,6 +13,7 @@ Desktop application for viewing, managing, and analyzing thermal panel inspectio
 - **QR Code Labels** — Generate, display, save, and batch-print QR labels for panels via DYMO LabelWriter
 - **Report Management** — Browse associated PDF reports and JSON data files organized by panel and repair type
 - **Data Management** — Reclassify, hide, and manage recordings with automatic backup of all changes
+- **Export Package** — Zip the app and the complete data folder (File → Export Package) to move everything to another PC; the unzipped package opens its data automatically
 - **Dark / Light Theme** — Full theme system with persistent preference
 - **Portable Build** — Package as a standalone Windows executable for USB deployment
 
