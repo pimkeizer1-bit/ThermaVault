@@ -83,6 +83,12 @@ class DataLoader:
                 for key in ('frame_count',):
                     if rec_data.get(key) is None:
                         rec_data[key] = 0
+                # panels.json stores absolute paths from the PC that made the
+                # recording. Prefer the copy inside this data folder so the
+                # folder keeps working after being moved or copied elsewhere.
+                local_dir = self.recordings_dir / rec_data['recording_id']
+                if rec_data['recording_id'] and local_dir.is_dir():
+                    rec_data['recording_path'] = str(local_dir)
                 recordings.append(RecordingData(**rec_data))
             panel_data['recordings'] = recordings
             # Ensure list fields aren't None
